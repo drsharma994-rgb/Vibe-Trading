@@ -257,3 +257,187 @@ if __name__ == "__main__":
     setups = scan()
     for row in setups[:20]:
         print(row)
+
+
+# --------------------------------------------------------------------------
+# 4. Additional confirmation layer: extra indicators/strategies used only to
+#    judge whether a setup composite_signal() already flagged is "solid"
+#    enough to be worth a human's attention. This never overrides
+#    composite_signal(), never places orders, and never fabricates a single
+#    black-box score -- it adds more independent, visible evidence on top,
+#    the same "gates you can see" approach used elsewhere in this repo.
+#    Nothing here is investment advice or a guarantee of any outcome.
+# --------------------------------------------------------------------------
+
+
+def _stoch_rsi(close, rsi_period=14, stoch_period=14):
+    """Stochastic RSI: momentum-of-momentum. Flags when RSI is already near
+    the top/bottom of its own recent range (momentum stretched, not fresh).
+    Used only as an exhaustion check, never as a standalone trigger.
+    """
+    rsi_vals = _rsi(close, rsi_period)
+    lowest = rsi_vals.rolling(stoch_period).min()
+    highest = rsi_vals.rolling(stoch_period).max()
+    denom = (highest - lowest).replace(0.0, np.nan)
+    return (rsi_vals - lowest) / denom * 100.0
+
+
+def _atr(high, low, close, period=14):
+    """Average True Range (Wilder). Used only to size a structural stop
+    distance for the reward:risk check below -- never to size a live
+    position or place an order.
+    """
+    prev_close = close.shift()
+    true_range = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    return _wilder_ewm(true_range, period)
+
+
+def _volume_zscore(volume, window=20):
+    """How far the latest bar's volume sits from its own rolling mean, in
+    standard deviations. A weak/negative value means thin participation.
+    """
+    recent = volume.iloc[-(window + 1):-1]
+    if len(recent) < window or recent.std(ddof=0) == 0:
+        return float("nan")
+    return float((volume.iloc[-1] - recent.mean()) / recent.std(ddof=0))
+
+
+def _bollinger_squeeze_then_expand(close, params, direction):
+    """True if band width was compressed relative to its own recent average
+    on the prior bar AND the latest close has broken outside the band in
+    the setup's direction. A volatility-expansion confirmation, separate
+    from the trend-strength check ADX already provides.
+    """
+    mid = close.rolling(params.bb_window).mean()
+    sd = close.rolling(params.bb_window).std()
+    width = (2 * params.bb_std * sd) / mid.replace(0.0, np.nan)
+    if len(width.dropna()) < params.bb_window + 5:
+        return False
+    prior_avg_width = width.iloc[-(params.bb_window + 1):-1].mean()
+    if not np.isfinite(prior_avg_width) or not np.isfinite(width.iloc[-2]):
+        return False
+    was_squeezed = width.iloc[-2] <= prior_avg_width
+    upper = mid.iloc[-1] + params.bb_std * sd.iloc[-1]
+    lower = mid.iloc[-1] - params.bb_std * sd.iloc[-1]
+    broke_out = (close.iloc[-1] > upper) if direction > 0 else (close.iloc[-1] < lower)
+    return bool(was_squeezed and broke_out)
+
+
+def mtf_trend_agrees(higher_tf_df, direction, params=None):
+    """Re-checks the EMA fast/slow cascade on a HIGHER-timeframe candle set
+    you supply (e.g. 4h candles when the base signal is on 1h) and returns
+    whether it points the same way. A signal that only exists on one
+    timeframe is weaker evidence than one that agrees across two. Pass
+    None / an empty frame to skip this honestly -- it returns False rather
+    than guessing.
+    """
+    params = params or CompositeParams()
+    if higher_tf_df is None or higher_tf_df.empty or len(higher_tf_df) < params.ema_slow + 5:
+        return False
+    close = higher_tf_df["close"]
+    ema_fast = close.ewm(span=params.ema_fast, adjust=False).mean()
+    ema_slow = close.ewm(span=params.ema_slow, adjust=False).mean()
+    if direction > 0:
+        return bool(ema_fast.iloc[-1] > ema_slow.iloc[-1])
+    return bool(ema_fast.iloc[-1] < ema_slow.iloc[-1])
+
+
+def confluence_check(df, signal, detail, params=None, higher_tf_df=None, min_rr=2.0, swing_lookback=30):
+    """Given the bar-set and the (signal, detail) composite_signal() already
+    produced, run four ADDITIONAL, independent confirmation families and
+    report a transparent pass/fail ledger -- never a single fabricated
+    score. `is_solid` only turns True when the base signal is non-zero AND
+    at least 3 of these 4 extra families confirm it:
+
+      trend_mtf     -- higher-timeframe EMA cascade agrees (if supplied)
+      momentum_ok   -- StochRSI is NOT already at its own extreme
+      participation -- volume z-score > 0.5 (real activity behind the move)
+      volatility    -- a Bollinger squeeze-then-expand just fired this bar
+      structure_rr  -- ATR-based structural stop gives >= min_rr to a
+                       naive 2x-ATR target from the latest close
+
+    Read-only analysis for a human to review; places no orders and is not
+    investment advice.
+    """
+    params = params or CompositeParams()
+    if signal == 0 or df is None or df.empty:
+        return {"is_solid": False, "reason": "no base signal", "families": {}}
+
+    close, high, low, volume = df["close"], df["high"], df["low"], df["volume"]
+
+    stoch = _stoch_rsi(close, params.rsi_period)
+    stoch_last = stoch.iloc[-1] if len(stoch.dropna()) else float("nan")
+    momentum_ok = bool(np.isfinite(stoch_last) and (stoch_last < 80 if signal > 0 else stoch_last > 20))
+
+    vz = _volume_zscore(volume)
+    participation = bool(np.isfinite(vz) and vz > 0.5)
+
+    volatility = _bollinger_squeeze_then_expand(close, params, signal)
+
+    atr_val = _atr(high, low, close, params.adx_period)
+    atr_last = atr_val.iloc[-1] if len(atr_val.dropna()) else float("nan")
+    structure_rr = False
+    rr_value = float("nan")
+    if np.isfinite(atr_last) and atr_last > 0:
+        entry = close.iloc[-1]
+        lookback = df.iloc[-(swing_lookback + 1):-1]
+        if not lookback.empty:
+            stop = lookback["low"].min() if signal > 0 else lookback["high"].max()
+            risk = abs(entry - stop)
+            if risk > 0:
+                target = entry + 2 * atr_last if signal > 0 else entry - 2 * atr_last
+                reward = abs(target - entry)
+                rr_value = reward / risk
+                structure_rr = rr_value >= min_rr
+
+    trend_mtf = mtf_trend_agrees(higher_tf_df, signal, params)
+
+    families = {
+        "trend_mtf": {"pass": trend_mtf, "detail": "higher-timeframe EMA cascade" if higher_tf_df is not None else "not supplied"},
+        "momentum_ok": {"pass": momentum_ok, "detail": "StochRSI=%.1f" % stoch_last if np.isfinite(stoch_last) else "n/a"},
+        "participation": {"pass": participation, "detail": "volume z=%.2f" % vz if np.isfinite(vz) else "n/a"},
+        "volatility": {"pass": volatility, "detail": "squeeze-then-expand fired" if volatility else "no fresh expansion"},
+        "structure_rr": {"pass": structure_rr, "detail": "R:R=%.2f" % rr_value if np.isfinite(rr_value) else "n/a"},
+    }
+    confirm_count = sum(1 for f in families.values() if f["pass"])
+    is_solid = confirm_count >= 3
+    return {"is_solid": is_solid, "confirmations": confirm_count, "of": len(families), "families": families}
+
+
+def scan_with_confluence(max_coindcx=15, max_delta=15, include_gold=True,
+                          timeframe_minutes="60", higher_timeframe_minutes="240", min_rr=2.0):
+    """Same universe as scan(), but each ranked setup is additionally run
+    through confluence_check() using a higher-timeframe candle set for the
+    trend_mtf confirmation. Adds `is_solid` / `confirmations` / `families`
+    to each row without removing or reordering anything scan() produced.
+    Still read-only, still not investment advice.
+    """
+    base_results = scan(max_coindcx=max_coindcx, max_delta=max_delta, include_gold=include_gold,
+                         timeframe_minutes=timeframe_minutes)
+    enriched = []
+    for row in base_results:
+        signal = 1 if row["signal"] == "long" else -1
+        venue, symbol = row["venue"], row["symbol"]
+        df, higher_df = None, None
+        try:
+            if venue == "coindcx":
+                df = coindcx_ohlcv(symbol, resolution=timeframe_minutes)
+                higher_df = coindcx_ohlcv(symbol, resolution=higher_timeframe_minutes)
+            elif venue == "delta" and ccxt is not None:
+                exchange = ccxt.delta({"enableRateLimit": True})
+                df = delta_ohlcv(exchange, symbol, timeframe="1h")
+                higher_df = delta_ohlcv(exchange, symbol, timeframe="4h")
+            elif venue == "comex":
+                df = gold_ohlcv()
+                higher_df = gold_ohlcv(period="2y", interval="1wk")
+        except Exception:
+            df, higher_df = None, None
+        if df is not None:
+            conf = confluence_check(df, signal, row.get("detail", {}), higher_tf_df=higher_df, min_rr=min_rr)
+        else:
+            conf = {"is_solid": False, "reason": "confirmation data unavailable", "families": {}}
+        enriched.append({**row, **conf})
+    return enriched
