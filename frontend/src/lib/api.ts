@@ -82,8 +82,60 @@ function appendQueryParam(url: string, key: string, value: string): string {
   return `${url}${sep}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
 }
 
+export interface ScannerFamilyResult {
+  pass: boolean;
+  detail: string;
+}
+
+export interface ScannerSetup {
+  venue: string;
+  symbol: string;
+  signal: "long" | "short";
+  close?: number;
+  ema_fast?: number;
+  ema_slow?: number;
+  adx?: number;
+  rsi?: number;
+  bb_upper?: number;
+  bb_lower?: number;
+  volume_ratio?: number;
+  is_solid?: boolean;
+  confirmations?: number;
+  of?: number;
+  families?: Record<string, ScannerFamilyResult>;
+}
+
+export interface ScannerRunResponse {
+  count: number;
+  generated_at: string;
+  setups: ScannerSetup[];
+  disclaimer: string;
+}
+
+export interface ScannerRunParams {
+  max_coindcx?: number;
+  max_delta?: number;
+  include_gold?: boolean;
+  timeframe_minutes?: string;
+  higher_timeframe_minutes?: string;
+  min_rr?: number;
+  solid_only?: boolean;
+}
+
 export const api = {
   uploadFile,
+  runScanner: (params: ScannerRunParams = {}) => {
+    const q = new URLSearchParams();
+    if (params.max_coindcx !== undefined) q.set("max_coindcx", String(params.max_coindcx));
+    if (params.max_delta !== undefined) q.set("max_delta", String(params.max_delta));
+    if (params.include_gold !== undefined) q.set("include_gold", String(params.include_gold));
+    if (params.timeframe_minutes) q.set("timeframe_minutes", params.timeframe_minutes);
+    if (params.higher_timeframe_minutes) q.set("higher_timeframe_minutes", params.higher_timeframe_minutes);
+    if (params.min_rr !== undefined) q.set("min_rr", String(params.min_rr));
+    if (params.solid_only !== undefined) q.set("solid_only", String(params.solid_only));
+    const qs = q.toString();
+    return request<ScannerRunResponse>(`/scanner/run${qs ? `?${qs}` : ""}`);
+  },
   listRuns: (limit?: number) => request<RunListItem[]>(`/runs${limit ? `?limit=${encodeURIComponent(String(limit))}` : ""}`),
   getRun: (id: string, params: RunDetailParams = {}) => {
     const q = new URLSearchParams();
