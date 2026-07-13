@@ -44,3 +44,33 @@ See `scanner.py` in this folder for a runnable implementation.
 - CoinDCX Market Data Terms forbid redistributing raw market data to third parties — scanner output is for the account owner's own use only.
 - Composite signals are historical/statistical pattern matches, not a guarantee of future performance. Crypto and gold futures are leveraged, high-risk instruments — always disclose this alongside any setup.
 - This skill must never be wired to order-execution endpoints on any venue.
+
+## Additional confirmation layer (is a setup "solid enough"?)
+
+`composite_signal()` gives a base long/short/neutral vote. On top of that,
+`confluence_check()` in `scanner.py` runs four MORE independent confirmation
+families and reports a transparent pass/fail ledger -- never a single
+fabricated score:
+
+- **trend_mtf** -- the same EMA9/EMA26 cascade re-checked on a higher
+  timeframe (e.g. 4h when the base signal is 1h). A signal that only
+  exists on one timeframe is weaker evidence than one that agrees on two.
+- **momentum_ok** -- Stochastic RSI is NOT already at its own extreme
+  (>80 for longs / <20 for shorts), i.e. momentum isn't already stretched.
+- **participation** -- volume z-score vs its own 20-bar mean is above 0.5,
+  i.e. real activity is behind the move, not a thin/quiet drift.
+- **volatility** -- a Bollinger Band squeeze-then-expand fired this bar
+  (band width was compressed vs its recent average, then price broke out
+  of the band in the setup's direction).
+- **structure_rr** -- an ATR-based structural stop against the recent
+  swing high/low still gives at least a 2:1 reward:risk to a naive 2x-ATR
+  target.
+
+`is_solid` only turns `True` when the base signal is non-zero AND at least
+3 of these 4 extra families confirm it. `scan_with_confluence(...)` wraps
+`scan()` and attaches `is_solid` / `confirmations` / `families` to every
+row without changing scan()'s own ranking. This is still read-only
+analysis for a human to review -- it does not place orders, does not
+change position sizing, and is not investment advice. A "solid" setup can
+still lose; a "not solid" one can still win. Treat it as one more filter,
+not a promise.
