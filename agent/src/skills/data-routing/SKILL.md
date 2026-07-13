@@ -143,3 +143,16 @@ single source. Cross-check it:
   uncorroborated figure as established fact.
 
 This discipline is what separates analysis from aggregation.
+
+
+## Live Futures Market-Data Skills (outside the backtest VALID_SOURCES list)
+
+These are venue-specific *live/current* market-data skills for scanning tradeable futures right now. They are separate from the backtest OHLCV Source Overview table above (which is a strict subset of backtest.loaders.registry.VALID_SOURCES) - do not add them to that table.
+
+| Skill | Venue | Coverage | Auth |
+|---|---|---|---|
+| coindcx-futures | CoinDCX | USDT/INR-margined crypto futures & perpetuals | No (public endpoints only) |
+| delta-futures | Delta Exchange | Crypto futures & perpetuals (via ccxt) | No (public ccxt methods only) |
+| crypto-gold-scanner | CoinDCX + Delta Exchange + COMEX gold | Cross-venue ranked "setup" scanner using the technical-basic composite indicator | No |
+
+Use crypto-gold-scanner when the user asks to scan/screen crypto futures across CoinDCX and/or Delta Exchange, or wants a combined crypto + gold technical setup list.
