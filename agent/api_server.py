@@ -274,6 +274,10 @@ from src.api.live_routes import (  # noqa: F401, E402
 from src.api.alpha_routes import register_alpha_routes  # noqa: E402
 register_alpha_routes(app)
 
+# --- Scanner (CoinDCX + Delta + gold confluence) ---
+from src.api.scanner_routes import register_scanner_routes  # noqa: E402
+register_scanner_routes(app)
+
 # --- Auth helpers (SSE tickets) ---
 from src.api.auth_routes import register_auth_routes  # noqa: E402
 register_auth_routes(app)
